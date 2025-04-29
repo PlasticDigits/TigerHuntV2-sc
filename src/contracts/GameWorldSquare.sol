@@ -209,11 +209,8 @@ contract GameWorldSquare is IGameWorld, AccessControl {
         state.tile = tile;
         state.isActive = true;
 
-        //TODO: Theres an issue here with permissioning the updateEntityWorld call
-        //TODO: when the entity is spawned from the SpawnRegistry
-
-        // Update world through registry
-        WORLD_REGISTRY.updateEntityWorld(gameEntity, WORLD_ID);
+        // Request spawning through WorldRegistry
+        WORLD_REGISTRY.spawnEntity(gameEntity, WORLD_ID);
 
         // Update tile tracking
         bytes32 tileKey = tile.getKey();

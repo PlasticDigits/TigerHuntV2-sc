@@ -15,6 +15,7 @@ library RegistryUtils {
     error InvalidWorld();
     error Unauthorized();
     error EntityAlreadyInWorld();
+    error EntityNotInWorld();
 
     function addToSet(
         mapping(bytes32 => EnumerableSet.Bytes32Set) storage map,

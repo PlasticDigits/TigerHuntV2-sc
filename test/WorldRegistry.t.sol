@@ -62,6 +62,8 @@ contract WorldRegistryTest is Test {
             worldRegistry.WORLD_MANAGER_ROLE(),
             worldManager
         );
+        worldRegistry.grantRole(worldRegistry.SPAWNER_ROLE(), address(this));
+        worldRegistry.grantRole(worldRegistry.SPAWNER_ROLE(), address(world1));
         vm.stopPrank();
 
         // Initialize registries
@@ -106,7 +108,30 @@ contract WorldRegistryTest is Test {
         worldRegistry.unregisterWorld(world1);
     }
 
-    // Test entityNFT movement between worlds
+    // Test entity spawning
+    function test_SpawnEntity() public {
+        uint256 world1Id = worldRegistry.getWorldId(world1);
+
+        // Add world as valid spawn point
+        vm.startPrank(
+            spawnRegistry.getRoleMember(spawnRegistry.DEFAULT_ADMIN_ROLE(), 0)
+        );
+        spawnRegistry.grantRole(
+            spawnRegistry.SPAWN_MANAGER_ROLE(),
+            worldManager
+        );
+        vm.stopPrank();
+
+        vm.prank(worldManager);
+        spawnRegistry.addValidSpawnWorld(world1Id);
+
+        // Spawn entity
+        vm.prank(address(world1));
+        worldRegistry.spawnEntity(gameEntity1, world1Id);
+        assertEq(worldRegistry.getEntityWorldId(gameEntity1), world1Id);
+    }
+
+    // Test entity movement between worlds
     function test_MoveEntityBetweenWorlds() public {
         uint256 world1Id = worldRegistry.getWorldId(world1);
         uint256 world2Id = worldRegistry.getWorldId(world2);
@@ -126,18 +151,18 @@ contract WorldRegistryTest is Test {
         vm.prank(worldManager);
         spawnRegistry.addValidSpawnWorld(world2Id);
 
-        // Spawn entityNFT in world1
-        vm.prank(worldManager);
-        spawnRegistry.spawnEntity(gameEntity1, world1Id);
+        // Spawn entity in world1
+        vm.prank(address(world1));
+        worldRegistry.spawnEntity(gameEntity1, world1Id);
 
-        // Move entityNFT to world2 - must be called by world1
+        // Move entity to world2 - must be called by world1
         vm.prank(address(world1));
         worldRegistry.updateEntityWorld(gameEntity1, world2Id);
 
         assertEq(worldRegistry.getEntityWorldId(gameEntity1), world2Id);
     }
 
-    // Test moving entityNFT to invalid world
+    // Test moving entity to invalid world
     function test_CannotMoveToInvalidWorld() public {
         uint256 world1Id = worldRegistry.getWorldId(world1);
         uint256 invalidWorldId = 999;
@@ -155,9 +180,9 @@ contract WorldRegistryTest is Test {
         vm.prank(worldManager);
         spawnRegistry.addValidSpawnWorld(world1Id);
 
-        // Spawn entityNFT in world1
-        vm.prank(worldManager);
-        spawnRegistry.spawnEntity(gameEntity1, world1Id);
+        // Spawn entity in world1
+        vm.prank(address(world1));
+        worldRegistry.spawnEntity(gameEntity1, world1Id);
 
         // Try to move to invalid world - must be called by world1
         vm.expectRevert(RegistryUtils.InvalidWorld.selector);
@@ -165,14 +190,11 @@ contract WorldRegistryTest is Test {
         worldRegistry.updateEntityWorld(gameEntity1, invalidWorldId);
     }
 
-    // Fuzzing test for multiple entityNFT movements
-    function testFuzz_MultipleEntityMovements(uint256 seed) public {
-        // Limit the number of entityNFTs to prevent stack too deep
-        uint256 numEntityNFTs = bound((seed % 10) + 1, 1, 10);
+    // Test unauthorized spawning
+    function test_OnlySpawnerCanSpawn() public {
         uint256 world1Id = worldRegistry.getWorldId(world1);
-        uint256 world2Id = worldRegistry.getWorldId(world2);
 
-        // Add worlds as valid spawn points
+        // Add world as valid spawn point
         vm.startPrank(
             spawnRegistry.getRoleMember(spawnRegistry.DEFAULT_ADMIN_ROLE(), 0)
         );
@@ -184,31 +206,52 @@ contract WorldRegistryTest is Test {
 
         vm.prank(worldManager);
         spawnRegistry.addValidSpawnWorld(world1Id);
+
+        // Non-spawner cannot spawn
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector,
+                nonManager,
+                worldRegistry.SPAWNER_ROLE()
+            )
+        );
+        vm.prank(nonManager);
+        worldRegistry.spawnEntity(gameEntity1, world1Id);
+    }
+
+    // Test spawning in invalid world
+    function test_CannotSpawnInInvalidWorld() public {
+        uint256 world1Id = worldRegistry.getWorldId(world1);
+
+        vm.expectRevert(RegistryUtils.InvalidWorld.selector);
+        worldRegistry.spawnEntity(gameEntity1, world1Id);
+    }
+
+    // Test spawning already spawned entity
+    function test_CannotSpawnExistingEntity() public {
+        uint256 world1Id = worldRegistry.getWorldId(world1);
+
+        // Add world as valid spawn point
+        vm.startPrank(
+            spawnRegistry.getRoleMember(spawnRegistry.DEFAULT_ADMIN_ROLE(), 0)
+        );
+        spawnRegistry.grantRole(
+            spawnRegistry.SPAWN_MANAGER_ROLE(),
+            worldManager
+        );
+        vm.stopPrank();
+
         vm.prank(worldManager);
-        spawnRegistry.addValidSpawnWorld(world2Id);
+        spawnRegistry.addValidSpawnWorld(world1Id);
 
-        // Create and move entityNFTs between worlds
-        for (uint256 i = 0; i < numEntityNFTs; i++) {
-            MockEntityNFT entityNFT = new MockEntityNFT();
-            GameEntity memory gameEntity = GameEntity({
-                entityNFT: entityNFT,
-                entityId: i + 1
-            });
+        // Spawn entity
+        vm.prank(address(world1));
+        worldRegistry.spawnEntity(gameEntity1, world1Id);
 
-            // Spawn in world1
-            vm.prank(worldManager);
-            spawnRegistry.spawnEntity(gameEntity, world1Id);
-
-            // Move to world2 - must be called by world1
-            vm.prank(address(world1));
-            worldRegistry.updateEntityWorld(gameEntity, world2Id);
-            assertEq(worldRegistry.getEntityWorldId(gameEntity), world2Id);
-
-            // Move back to world1 - must be called by world2
-            vm.prank(address(world2));
-            worldRegistry.updateEntityWorld(gameEntity, world1Id);
-            assertEq(worldRegistry.getEntityWorldId(gameEntity), world1Id);
-        }
+        // Try to spawn again
+        vm.expectRevert(RegistryUtils.EntityAlreadyInWorld.selector);
+        vm.prank(address(world1));
+        worldRegistry.spawnEntity(gameEntity1, world1Id);
     }
 
     // Test event emissions
@@ -248,13 +291,15 @@ contract WorldRegistryTest is Test {
         uint256 newWorldId = worldRegistry.getWorldId(world1);
         vm.prank(worldManager);
         spawnRegistry.addValidSpawnWorld(newWorldId);
-        vm.prank(worldManager);
-        spawnRegistry.spawnEntity(gameEntity1, newWorldId);
 
-        // Get world2's ID
+        // Test EntityWorldChanged event for spawning
+        vm.expectEmit(true, true, true, true);
+        emit IWorldRegistry.EntityWorldChanged(gameEntity1, 0, newWorldId);
+        vm.prank(address(world1));
+        worldRegistry.spawnEntity(gameEntity1, newWorldId);
+
+        // Test EntityWorldChanged event for moving
         uint256 world2Id = worldRegistry.getWorldId(world2);
-
-        // Move entity from world1 to world2 - must be called by world1
         vm.expectEmit(true, true, true, true);
         emit IWorldRegistry.EntityWorldChanged(
             gameEntity1,
@@ -279,7 +324,7 @@ contract WorldRegistryTest is Test {
         }
     }
 
-    // Invariant test for entityNFT world assignment
+    // Invariant test for entity world assignment
     function test_Invariant_EntityWorldAssignment() public {
         uint256 world1Id = worldRegistry.getWorldId(world1);
         uint256 world2Id = worldRegistry.getWorldId(world2);
@@ -299,11 +344,11 @@ contract WorldRegistryTest is Test {
         vm.prank(worldManager);
         spawnRegistry.addValidSpawnWorld(world2Id);
 
-        // Spawn entityNFT in world1
-        vm.prank(worldManager);
-        spawnRegistry.spawnEntity(gameEntity1, world1Id);
+        // Spawn entity in world1
+        vm.prank(address(world1));
+        worldRegistry.spawnEntity(gameEntity1, world1Id);
 
-        // Move entityNFT between worlds multiple times
+        // Move entity between worlds multiple times
         for (uint256 i = 0; i < 3; i++) {
             // Move to world2 - must be called by world1
             vm.prank(address(world1));

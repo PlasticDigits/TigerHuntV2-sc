@@ -29,4 +29,8 @@ interface IWorldRegistry {
     function registerWorld(IGameWorld world) external;
     function isWorldRegistered(IGameWorld world) external view returns (bool);
     function getWorldId(IGameWorld world) external view returns (uint256);
+    function spawnEntity(
+        GameEntity calldata gameEntity,
+        uint256 targetWorldId
+    ) external;
 }

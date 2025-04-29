@@ -19,7 +19,6 @@ contract SpawnRegistry is AccessControlEnumerable {
     event SpawnRegistryInitialized(address worldRegistry);
     event SpawnWorldAdded(uint256 worldId);
     event SpawnWorldRemoved(uint256 worldId);
-    event EntitySpawned(GameEntity gameEntity, uint256 worldId);
 
     constructor() {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -45,21 +44,5 @@ contract SpawnRegistry is AccessControlEnumerable {
     ) external onlyRole(SPAWN_MANAGER_ROLE) {
         validSpawnWorlds[worldId] = false;
         emit SpawnWorldRemoved(worldId);
-    }
-
-    function spawnEntity(
-        GameEntity calldata gameEntity,
-        uint256 targetWorldId
-    ) external onlyRole(SPAWN_MANAGER_ROLE) {
-        if (!validSpawnWorlds[targetWorldId])
-            revert RegistryUtils.InvalidWorld();
-
-        // Revert if the entity is already in a world
-        if (worldRegistry.getEntityWorldId(gameEntity) != 0)
-            revert RegistryUtils.EntityAlreadyInWorld();
-
-        worldRegistry.updateEntityWorld(gameEntity, targetWorldId);
-
-        emit EntitySpawned(gameEntity, targetWorldId);
     }
 }

@@ -15,6 +15,7 @@ contract WorldRegistry is IWorldRegistry, AccessControlEnumerable {
 
     bytes32 public constant WORLD_MANAGER_ROLE =
         keccak256("WORLD_MANAGER_ROLE");
+    bytes32 public constant SPAWNER_ROLE = keccak256("SPAWNER_ROLE");
 
     mapping(bytes32 entityKey => uint256 worldId) private _entityWorldIds;
     mapping(IGameWorld worldAddress => uint256 worldId) private _worldIds;
@@ -27,6 +28,7 @@ contract WorldRegistry is IWorldRegistry, AccessControlEnumerable {
     constructor() {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(WORLD_MANAGER_ROLE, msg.sender);
+        _grantRole(SPAWNER_ROLE, msg.sender);
     }
 
     function setSpawnRegistry(
@@ -42,35 +44,45 @@ contract WorldRegistry is IWorldRegistry, AccessControlEnumerable {
         return _entityWorldIds[gameEntity.getKey()];
     }
 
-    function moveEntity(
-        GameEntity calldata gameEntity,
-        uint256 targetWorldId
-    ) external {
-        updateEntityWorld(gameEntity, targetWorldId);
-    }
-
     function updateEntityWorld(
         GameEntity calldata gameEntity,
         uint256 targetWorldId
-    ) public {
+    ) external {
         // If the target world is not registered, revert
         if (_worldIdToWorld[targetWorldId] == IGameWorld(address(0)))
             revert RegistryUtils.InvalidWorld();
 
         uint256 currentWorldId = _entityWorldIds[gameEntity.getKey()];
 
-        // If entity is spawning (currentWorldId == 0), only allow SpawnRegistry
-        if (currentWorldId == 0) {
-            if (msg.sender != address(spawnRegistry))
-                revert RegistryUtils.Unauthorized();
-        } else {
-            // For existing entities, only allow transfer from current world
-            if (currentWorldId != _worldIds[IGameWorld(msg.sender)])
-                revert RegistryUtils.Unauthorized();
-        }
+        // Only allow spawning through spawnEntity
+        if (currentWorldId == 0) revert RegistryUtils.EntityNotInWorld();
+
+        if (currentWorldId != _worldIds[IGameWorld(msg.sender)])
+            revert RegistryUtils.Unauthorized();
 
         _entityWorldIds[gameEntity.getKey()] = targetWorldId;
         emit EntityWorldChanged(gameEntity, currentWorldId, targetWorldId);
+    }
+
+    function spawnEntity(
+        GameEntity calldata gameEntity,
+        uint256 targetWorldId
+    ) external onlyRole(SPAWNER_ROLE) {
+        // Check if the target world is a valid spawn point
+        if (!spawnRegistry.validSpawnWorlds(targetWorldId))
+            revert RegistryUtils.InvalidWorld();
+
+        // Check if entity is already in a world
+        if (_entityWorldIds[gameEntity.getKey()] != 0)
+            revert RegistryUtils.EntityAlreadyInWorld();
+
+        // Check if the targetWorld is the calling contract
+        if (_worldIds[IGameWorld(msg.sender)] != targetWorldId)
+            revert RegistryUtils.Unauthorized();
+
+        // Update entity world
+        _entityWorldIds[gameEntity.getKey()] = targetWorldId;
+        emit EntityWorldChanged(gameEntity, 0, targetWorldId);
     }
 
     function registerWorld(
