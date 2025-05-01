@@ -35,8 +35,9 @@ contract GameWorldSquare is IGameWorld, AccessControl {
         bool isActive;
     }
     mapping(bytes32 entityRefKey => EntityState state) private _entityStates;
-    mapping(bytes32 tileKey => EnumerableSet.UintSet entityKeys)
+    mapping(bytes32 tileKey => EnumerableSet.UintSet entityRefKeys)
         private _tileToEntityKeys;
+    mapping(bytes32 entityRefKey => GameEntity entity) private _gameEntities;
 
     // Portal management
     struct PortalInfo {
@@ -182,6 +183,9 @@ contract GameWorldSquare is IGameWorld, AccessControl {
         // Update world through registry
         WORLD_REGISTRY.updateEntityWorld(gameEntity, portal.targetWorldId);
 
+        // Clear entity state
+        _clearEntityState(entityKey);
+
         emit EntityExitedWorld(gameEntity, WORLD_ID, portal.sourceTile);
         emit EntityEnteredWorld(
             gameEntity,
@@ -197,6 +201,7 @@ contract GameWorldSquare is IGameWorld, AccessControl {
         PackedTileCoordinate calldata tile
     ) external onlyRole(SPAWNER_ROLE) {
         bytes32 entityKey = gameEntity.getKey();
+        _gameEntities[entityKey] = gameEntity;
         EntityState storage state = _entityStates[entityKey];
         if (state.isActive) revert EntityAlreadyInWorld();
 
@@ -232,13 +237,26 @@ contract GameWorldSquare is IGameWorld, AccessControl {
         bytes32 tileKey = state.tile.getKey();
         _tileToEntityKeys[tileKey].remove(uint256(entityKey));
 
-        // Clear entity state
-        delete _entityStates[entityKey];
-
         // Update world through registry
         WORLD_REGISTRY.updateEntityWorld(gameEntity, 0);
 
+        // Clear entity state
+        _clearEntityState(entityKey);
+
         emit EntityDespawned(gameEntity, WORLD_ID, state.tile);
+    }
+
+    function _clearEntityState(bytes32 entityKey) private {
+        EntityState storage state = _entityStates[entityKey];
+        delete state.isActive;
+        delete state.tile.packed;
+        delete state.tile;
+        delete _entityStates[entityKey];
+
+        GameEntity storage gameEntity = _gameEntities[entityKey];
+        delete gameEntity.entityNFT;
+        delete gameEntity.entityId;
+        delete _gameEntities[entityKey];
     }
 
     // ============ View Functions ============
@@ -373,7 +391,7 @@ contract GameWorldSquare is IGameWorld, AccessControl {
         PackedTileCoordinate calldata tile,
         uint256 startIndex,
         uint256 count
-    ) external view returns (GameEntity[] memory) {
+    ) external view returns (GameEntity[] memory entities) {
         bytes32 tileKey = tile.getKey();
         EnumerableSet.UintSet storage entityKeys = _tileToEntityKeys[tileKey];
         uint256 totalEntities = entityKeys.length();
@@ -388,16 +406,12 @@ contract GameWorldSquare is IGameWorld, AccessControl {
         }
 
         uint256 resultCount = endIndex - startIndex;
-        GameEntity[] memory entities = new GameEntity[](resultCount);
+        entities = new GameEntity[](resultCount);
 
         for (uint256 i = 0; i < resultCount; i++) {
             bytes32 entityKey = bytes32(entityKeys.at(startIndex + i));
-            // Extract entity and entityId from the key
-            (address entity, uint256 entityId) = abi.decode(
-                abi.encodePacked(entityKey),
-                (address, uint256)
-            );
-            entities[i] = GameEntity(IEntityNFT(entity), entityId);
+            // Get the stored entity directly from our mapping
+            entities[i] = _gameEntities[entityKey];
         }
 
         return entities;

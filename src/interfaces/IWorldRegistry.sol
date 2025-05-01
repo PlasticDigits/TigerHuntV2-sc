@@ -33,4 +33,11 @@ interface IWorldRegistry {
         GameEntity calldata gameEntity,
         uint256 targetWorldId
     ) external;
+    function getWorldFromWorldId(
+        uint256 worldId
+    ) external view returns (IGameWorld);
+    function getAreEntitiesInSameWorld(
+        GameEntity calldata gameEntity1,
+        GameEntity calldata gameEntity2
+    ) external view returns (bool);
 }

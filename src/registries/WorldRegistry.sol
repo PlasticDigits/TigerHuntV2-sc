@@ -49,14 +49,18 @@ contract WorldRegistry is IWorldRegistry, AccessControlEnumerable {
         uint256 targetWorldId
     ) external {
         // If the target world is not registered, revert
-        if (_worldIdToWorld[targetWorldId] == IGameWorld(address(0)))
-            revert RegistryUtils.InvalidWorld();
+        // Unless it is 0, which means this is a despawn
+        if (
+            targetWorldId != 0 &&
+            _worldIdToWorld[targetWorldId] == IGameWorld(address(0))
+        ) revert RegistryUtils.InvalidWorld();
 
         uint256 currentWorldId = _entityWorldIds[gameEntity.getKey()];
 
         // Only allow spawning through spawnEntity
         if (currentWorldId == 0) revert RegistryUtils.EntityNotInWorld();
 
+        // Only allow the current world to update the game entity's world
         if (currentWorldId != _worldIds[IGameWorld(msg.sender)])
             revert RegistryUtils.Unauthorized();
 
@@ -119,5 +123,14 @@ contract WorldRegistry is IWorldRegistry, AccessControlEnumerable {
         uint256 worldId
     ) external view returns (IGameWorld) {
         return _worldIdToWorld[worldId];
+    }
+
+    function getAreEntitiesInSameWorld(
+        GameEntity calldata gameEntity1,
+        GameEntity calldata gameEntity2
+    ) external view returns (bool) {
+        return
+            _entityWorldIds[gameEntity1.getKey()] ==
+            _entityWorldIds[gameEntity2.getKey()];
     }
 }

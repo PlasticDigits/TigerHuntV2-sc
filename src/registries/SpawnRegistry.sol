@@ -4,8 +4,8 @@ pragma solidity ^0.8.23;
 
 import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 import {IWorldRegistry} from "../interfaces/IWorldRegistry.sol";
-import {RegistryUtils} from "../libraries/RegistryUtils.sol";
 import {GameEntity} from "../structs/GameEntity.sol";
+import {RegistryUtils} from "../libraries/RegistryUtils.sol";
 
 contract SpawnRegistry is AccessControlEnumerable {
     bytes32 public constant SPAWN_MANAGER_ROLE =
@@ -35,6 +35,8 @@ contract SpawnRegistry is AccessControlEnumerable {
     function addValidSpawnWorld(
         uint256 worldId
     ) external onlyRole(SPAWN_MANAGER_ROLE) {
+        if (validSpawnWorlds[worldId]) revert RegistryUtils.AlreadyRegistered();
+
         validSpawnWorlds[worldId] = true;
         emit SpawnWorldAdded(worldId);
     }
@@ -42,6 +44,8 @@ contract SpawnRegistry is AccessControlEnumerable {
     function removeValidSpawnWorld(
         uint256 worldId
     ) external onlyRole(SPAWN_MANAGER_ROLE) {
+        if (!validSpawnWorlds[worldId]) revert RegistryUtils.NotRegistered();
+
         validSpawnWorlds[worldId] = false;
         emit SpawnWorldRemoved(worldId);
     }

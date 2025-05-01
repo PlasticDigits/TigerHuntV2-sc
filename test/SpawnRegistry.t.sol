@@ -130,6 +130,30 @@ contract SpawnRegistryTest is Test {
         spawnRegistry.addValidSpawnWorld(worldId);
     }
 
+    // Test adding a world that's already a valid spawn world
+    function test_CannotAddAlreadyValidSpawnWorld() public {
+        uint256 worldId = worldRegistry.getWorldId(world1);
+
+        // Add world as valid spawn point
+        vm.prank(spawnManager);
+        spawnRegistry.addValidSpawnWorld(worldId);
+
+        // Try to add again
+        vm.expectRevert(RegistryUtils.AlreadyRegistered.selector);
+        vm.prank(spawnManager);
+        spawnRegistry.addValidSpawnWorld(worldId);
+    }
+
+    // Test removing a world that's not a valid spawn world
+    function test_CannotRemoveInvalidSpawnWorld() public {
+        uint256 worldId = worldRegistry.getWorldId(world1);
+
+        // Try to remove a world that hasn't been added
+        vm.expectRevert(RegistryUtils.NotRegistered.selector);
+        vm.prank(spawnManager);
+        spawnRegistry.removeValidSpawnWorld(worldId);
+    }
+
     // Test spawning through WorldRegistry
     function test_WorldRegistrySpawnEntity() public {
         uint256 worldId = worldRegistry.getWorldId(world1);
