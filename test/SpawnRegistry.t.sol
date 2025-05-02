@@ -7,7 +7,7 @@ import {WorldRegistry} from "../src/registries/WorldRegistry.sol";
 import {IGameWorld} from "../src/interfaces/IGameWorld.sol";
 import {MockEntityNFT} from "./mocks/MockEntityNFT.sol";
 import {MockGameWorld} from "./mocks/MockGameWorld.sol";
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {TigerHuntAccessManager} from "../src/access/TigerHuntAccessManager.sol";
 import {RegistryUtils} from "../src/libraries/RegistryUtils.sol";
 import {IEntityNFT} from "../src/interfaces/IEntityNFT.sol";
 import {GameEntity} from "../src/structs/GameEntity.sol";
@@ -15,6 +15,7 @@ import {GameEntity} from "../src/structs/GameEntity.sol";
 contract SpawnRegistryTest is Test {
     SpawnRegistry public spawnRegistry;
     WorldRegistry public worldRegistry;
+    TigerHuntAccessManager public accessManager;
     MockEntityNFT public entityNft1;
     MockEntityNFT public entityNft2;
     address public entityHolder;
@@ -29,15 +30,16 @@ contract SpawnRegistryTest is Test {
     address public admin;
 
     function setUp() public {
-        // Deploy contracts
-        worldRegistry = new WorldRegistry();
-        spawnRegistry = new SpawnRegistry();
-
         // Create test addresses
         admin = makeAddr("admin");
         spawnManager = makeAddr("spawnManager");
         nonManager = makeAddr("nonManager");
         entityHolder = makeAddr("entityHolder");
+
+        // Deploy AccessManager and contracts
+        accessManager = new TigerHuntAccessManager(admin);
+        worldRegistry = new WorldRegistry(address(accessManager));
+        spawnRegistry = new SpawnRegistry(address(accessManager));
 
         // Create entityNFTs and worlds
         entityNft1 = new MockEntityNFT();
@@ -54,41 +56,81 @@ contract SpawnRegistryTest is Test {
         entityNft2.mint(entityHolder, 2);
         gameEntity4 = GameEntity({entityNFT: entityNft2, entityId: 2});
 
-        // Setup roles
-        vm.startPrank(
-            worldRegistry.getRoleMember(worldRegistry.DEFAULT_ADMIN_ROLE(), 0)
-        );
-        worldRegistry.grantRole(
-            worldRegistry.WORLD_MANAGER_ROLE(),
-            spawnManager
-        );
-        worldRegistry.grantRole(worldRegistry.SPAWNER_ROLE(), address(this));
-        worldRegistry.grantRole(worldRegistry.SPAWNER_ROLE(), address(world1));
-        vm.stopPrank();
+        // Setup permissions
+        vm.startPrank(admin);
 
-        vm.startPrank(
-            spawnRegistry.getRoleMember(spawnRegistry.DEFAULT_ADMIN_ROLE(), 0)
+        // Configure permissions for WorldRegistry functions
+        bytes4[] memory worldManagerSelectors = new bytes4[](2);
+        worldManagerSelectors[0] = WorldRegistry.registerWorld.selector;
+        worldManagerSelectors[1] = WorldRegistry.unregisterWorld.selector;
+        accessManager.setTargetFunctionRole(
+            address(worldRegistry),
+            worldManagerSelectors,
+            accessManager.WORLD_MANAGER_ROLE()
         );
-        spawnRegistry.grantRole(
-            spawnRegistry.SPAWN_MANAGER_ROLE(),
-            spawnManager
+
+        bytes4[] memory spawnerSelectors = new bytes4[](1);
+        spawnerSelectors[0] = WorldRegistry.spawnEntity.selector;
+        accessManager.setTargetFunctionRole(
+            address(worldRegistry),
+            spawnerSelectors,
+            accessManager.SPAWNER_ROLE()
         );
+
+        bytes4[] memory adminSelectors = new bytes4[](1);
+        adminSelectors[0] = WorldRegistry.setDependencies.selector;
+        accessManager.setTargetFunctionRole(
+            address(worldRegistry),
+            adminSelectors,
+            accessManager.ADMIN_ROLE()
+        );
+
+        // Configure permissions for SpawnRegistry functions
+        bytes4[] memory spawnManagerSelectors = new bytes4[](2);
+        spawnManagerSelectors[0] = SpawnRegistry.addValidSpawnWorld.selector;
+        spawnManagerSelectors[1] = SpawnRegistry.removeValidSpawnWorld.selector;
+        accessManager.setTargetFunctionRole(
+            address(spawnRegistry),
+            spawnManagerSelectors,
+            accessManager.SPAWN_MANAGER_ROLE()
+        );
+
+        bytes4[] memory spawnAdminSelectors = new bytes4[](1);
+        spawnAdminSelectors[0] = SpawnRegistry.setDependencies.selector;
+        accessManager.setTargetFunctionRole(
+            address(spawnRegistry),
+            spawnAdminSelectors,
+            accessManager.ADMIN_ROLE()
+        );
+
+        // Grant roles to addresses
+        accessManager.grantRole(
+            accessManager.WORLD_MANAGER_ROLE(),
+            spawnManager,
+            0
+        );
+        accessManager.grantRole(
+            accessManager.SPAWN_MANAGER_ROLE(),
+            spawnManager,
+            0
+        );
+        accessManager.grantRole(accessManager.SPAWNER_ROLE(), address(this), 0);
+        accessManager.grantRole(
+            accessManager.SPAWNER_ROLE(),
+            address(world1),
+            0
+        );
+
         vm.stopPrank();
 
         // Initialize registries
-        worldRegistry.setSpawnRegistry(spawnRegistry);
-        spawnRegistry.setWorldRegistry(worldRegistry);
+        vm.prank(admin);
+        worldRegistry.setDependencies(spawnRegistry);
+
+        vm.prank(admin);
+        spawnRegistry.setDependencies(worldRegistry);
 
         // Register worlds
-        vm.startPrank(
-            worldRegistry.getRoleMember(worldRegistry.DEFAULT_ADMIN_ROLE(), 0)
-        );
-        worldRegistry.grantRole(
-            worldRegistry.WORLD_MANAGER_ROLE(),
-            spawnManager
-        );
-        vm.stopPrank();
-
         vm.prank(spawnManager);
         worldRegistry.registerWorld(world1);
         vm.prank(spawnManager);
@@ -115,13 +157,7 @@ contract SpawnRegistryTest is Test {
         uint256 worldId = worldRegistry.getWorldId(world1);
 
         // Non-manager cannot add spawn world
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector,
-                nonManager,
-                spawnRegistry.SPAWN_MANAGER_ROLE()
-            )
-        );
+        vm.expectRevert(); // AccessManager will revert with unauthorized error
         vm.prank(nonManager);
         spawnRegistry.addValidSpawnWorld(worldId);
 
@@ -203,13 +239,7 @@ contract SpawnRegistryTest is Test {
         spawnRegistry.addValidSpawnWorld(worldId);
 
         // Non-spawner cannot spawn
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector,
-                nonManager,
-                worldRegistry.SPAWNER_ROLE()
-            )
-        );
+        vm.expectRevert(); // AccessManager will revert with unauthorized error
         vm.prank(nonManager);
         worldRegistry.spawnEntity(gameEntity1, worldId);
     }

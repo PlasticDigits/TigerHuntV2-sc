@@ -3,26 +3,19 @@
 pragma solidity ^0.8.23;
 
 import {IGameWorld} from "../interfaces/IGameWorld.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {GameEntity} from "../structs/GameEntity.sol";
 import {CoordinatePacking} from "../libraries/CoordinatePacking.sol";
 import {GameEntityUtils} from "../libraries/GameEntityUtils.sol";
 import {IEntityNFT} from "../interfaces/IEntityNFT.sol";
 import {IWorldRegistry} from "../interfaces/IWorldRegistry.sol";
+import {TigerHuntAccessManager} from "../access/TigerHuntAccessManager.sol";
 
-contract GameWorldSquare is IGameWorld, AccessControl {
+contract GameWorldSquare is IGameWorld, AccessManaged {
     using EnumerableSet for EnumerableSet.UintSet;
     using CoordinatePacking for IGameWorld.PackedTileCoordinate;
     using GameEntityUtils for GameEntity;
-
-    // Role for managing portals
-    bytes32 public constant PORTAL_MANAGER_ROLE =
-        keccak256("PORTAL_MANAGER_ROLE");
-    // Role for the game router
-    bytes32 public constant ROUTER_ROLE = keccak256("ROUTER_ROLE");
-    // Role for spawning entities
-    bytes32 public constant SPAWNER_ROLE = keccak256("SPAWNER_ROLE");
 
     // World configuration
     uint256 public immutable WORLD_ID;
@@ -55,17 +48,12 @@ contract GameWorldSquare is IGameWorld, AccessControl {
     constructor(
         uint256 _worldId,
         uint256 _worldSize,
-        address _router,
-        IWorldRegistry _worldRegistry
-    ) {
+        IWorldRegistry _worldRegistry,
+        address _accessManager
+    ) AccessManaged(_accessManager) {
         WORLD_ID = _worldId;
         WORLD_SIZE = _worldSize;
         WORLD_REGISTRY = _worldRegistry;
-
-        // Set up roles
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(ROUTER_ROLE, _router);
-        _grantRole(SPAWNER_ROLE, msg.sender);
 
         emit WorldSizeSet(_worldSize);
     }
@@ -77,7 +65,7 @@ contract GameWorldSquare is IGameWorld, AccessControl {
         PackedTileCoordinate calldata sourceTile,
         PackedTileCoordinate calldata targetTile,
         uint256 targetWorldId
-    ) external onlyRole(PORTAL_MANAGER_ROLE) returns (uint256 portalId) {
+    ) external restricted returns (uint256 portalId) {
         if (_worldId != WORLD_ID) revert InvalidWorldId();
         if (_tileToPortalId[sourceTile.getKey()] != 0)
             revert PortalAlreadyExists();
@@ -112,7 +100,7 @@ contract GameWorldSquare is IGameWorld, AccessControl {
     function removePortal(
         uint256 portalId,
         uint256 _worldId
-    ) external onlyRole(PORTAL_MANAGER_ROLE) {
+    ) external restricted {
         if (_worldId != WORLD_ID) revert InvalidWorldId();
         if (!_activePortalIds.contains(portalId)) revert PortalNotFound();
 
@@ -139,7 +127,7 @@ contract GameWorldSquare is IGameWorld, AccessControl {
         GameEntity calldata gameEntity,
         PackedTileCoordinate calldata fromTile,
         PackedTileCoordinate calldata toTile
-    ) external onlyRole(ROUTER_ROLE) {
+    ) external restricted {
         // Verify entity is in the correct tile
         bytes32 entityKey = gameEntity.getKey();
         EntityState storage state = _entityStates[entityKey];
@@ -165,7 +153,7 @@ contract GameWorldSquare is IGameWorld, AccessControl {
     function transferEntityThroughPortal(
         GameEntity calldata gameEntity,
         WorldPortal calldata portal
-    ) external onlyRole(ROUTER_ROLE) {
+    ) external restricted {
         // Verify entity is in the correct tile
         bytes32 entityKey = gameEntity.getKey();
         EntityState storage state = _entityStates[entityKey];
@@ -199,7 +187,7 @@ contract GameWorldSquare is IGameWorld, AccessControl {
     function spawnEntity(
         GameEntity calldata gameEntity,
         PackedTileCoordinate calldata tile
-    ) external onlyRole(SPAWNER_ROLE) {
+    ) external restricted {
         bytes32 entityKey = gameEntity.getKey();
         _gameEntities[entityKey] = gameEntity;
         EntityState storage state = _entityStates[entityKey];
@@ -224,9 +212,7 @@ contract GameWorldSquare is IGameWorld, AccessControl {
         emit EntitySpawned(gameEntity, WORLD_ID, tile);
     }
 
-    function despawnEntity(
-        GameEntity calldata gameEntity
-    ) external onlyRole(SPAWNER_ROLE) {
+    function despawnEntity(GameEntity calldata gameEntity) external restricted {
         bytes32 entityKey = gameEntity.getKey();
         EntityState storage state = _entityStates[entityKey];
         if (!state.isActive) revert EntityNotInWorld();

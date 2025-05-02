@@ -4,18 +4,15 @@ pragma solidity ^0.8.23;
 
 import {IWorldRegistry} from "../interfaces/IWorldRegistry.sol";
 import {IGameWorld} from "../interfaces/IGameWorld.sol";
-import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
+import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import {RegistryUtils} from "../libraries/RegistryUtils.sol";
 import {SpawnRegistry} from "./SpawnRegistry.sol";
 import {GameEntity} from "../structs/GameEntity.sol";
 import {GameEntityUtils} from "../libraries/GameEntityUtils.sol";
+import {TigerHuntAccessManager} from "../access/TigerHuntAccessManager.sol";
 
-contract WorldRegistry is IWorldRegistry, AccessControlEnumerable {
+contract WorldRegistry is IWorldRegistry, AccessManaged {
     using GameEntityUtils for GameEntity;
-
-    bytes32 public constant WORLD_MANAGER_ROLE =
-        keccak256("WORLD_MANAGER_ROLE");
-    bytes32 public constant SPAWNER_ROLE = keccak256("SPAWNER_ROLE");
 
     mapping(bytes32 entityKey => uint256 worldId) private _entityWorldIds;
     mapping(IGameWorld worldAddress => uint256 worldId) private _worldIds;
@@ -25,15 +22,9 @@ contract WorldRegistry is IWorldRegistry, AccessControlEnumerable {
     event SpawnRegistrySet(SpawnRegistry spawnRegistry);
     SpawnRegistry public spawnRegistry;
 
-    constructor() {
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(WORLD_MANAGER_ROLE, msg.sender);
-        _grantRole(SPAWNER_ROLE, msg.sender);
-    }
+    constructor(address accessManager) AccessManaged(accessManager) {}
 
-    function setSpawnRegistry(
-        SpawnRegistry _spawnRegistry
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setDependencies(SpawnRegistry _spawnRegistry) external restricted {
         spawnRegistry = _spawnRegistry;
         emit SpawnRegistrySet(spawnRegistry);
     }
@@ -71,7 +62,7 @@ contract WorldRegistry is IWorldRegistry, AccessControlEnumerable {
     function spawnEntity(
         GameEntity calldata gameEntity,
         uint256 targetWorldId
-    ) external onlyRole(SPAWNER_ROLE) {
+    ) external restricted {
         // Check if the target world is a valid spawn point
         if (!spawnRegistry.validSpawnWorlds(targetWorldId))
             revert RegistryUtils.InvalidWorld();
@@ -89,9 +80,7 @@ contract WorldRegistry is IWorldRegistry, AccessControlEnumerable {
         emit EntityWorldChanged(gameEntity, 0, targetWorldId);
     }
 
-    function registerWorld(
-        IGameWorld world
-    ) external onlyRole(WORLD_MANAGER_ROLE) {
+    function registerWorld(IGameWorld world) external restricted {
         if (_worldIds[world] != 0) revert RegistryUtils.AlreadyRegistered();
 
         uint256 worldId = _nextWorldId++;
@@ -100,9 +89,7 @@ contract WorldRegistry is IWorldRegistry, AccessControlEnumerable {
         emit WorldRegistered(worldId, world);
     }
 
-    function unregisterWorld(
-        IGameWorld world
-    ) external onlyRole(WORLD_MANAGER_ROLE) {
+    function unregisterWorld(IGameWorld world) external restricted {
         if (_worldIds[world] == 0) revert RegistryUtils.NotRegistered();
 
         uint256 worldId = _worldIds[world];

@@ -12,62 +12,165 @@ import {WorldRegistry} from "../src/registries/WorldRegistry.sol";
 import {SpawnRegistry} from "../src/registries/SpawnRegistry.sol";
 import {IEntityNFT} from "../src/interfaces/IEntityNFT.sol";
 import {GameEntity} from "../src/structs/GameEntity.sol";
+import {TigerHuntAccessManager} from "../src/access/TigerHuntAccessManager.sol";
 
 contract GameWorldSquareTest is Test {
     GameWorldSquare public world;
     MockEntityNFT public mockEntity;
     WorldRegistry public worldRegistry;
     SpawnRegistry public spawnRegistry;
+    TigerHuntAccessManager public accessManager;
     address public router;
     address public portalManager;
     address public spawner;
+    address public admin;
 
     uint256 public constant WORLD_ID = 1;
     uint256 public constant WORLD_SIZE = 100;
 
     function setUp() public {
+        admin = makeAddr("admin");
         router = makeAddr("router");
         portalManager = makeAddr("portalManager");
         spawner = makeAddr("spawner");
         mockEntity = new MockEntityNFT();
 
+        // Create AccessManager
+        accessManager = new TigerHuntAccessManager(admin);
+
         // Create and set up WorldRegistry and SpawnRegistry
-        worldRegistry = new WorldRegistry();
-        spawnRegistry = new SpawnRegistry();
+        worldRegistry = new WorldRegistry(address(accessManager));
+        spawnRegistry = new SpawnRegistry(address(accessManager));
+
+        // Set up permissions
+        vm.startPrank(admin);
+
+        // Configure WorldRegistry permissions
+        bytes4[] memory worldManagerSelectors = new bytes4[](2);
+        worldManagerSelectors[0] = WorldRegistry.registerWorld.selector;
+        worldManagerSelectors[1] = WorldRegistry.unregisterWorld.selector;
+        accessManager.setTargetFunctionRole(
+            address(worldRegistry),
+            worldManagerSelectors,
+            accessManager.WORLD_MANAGER_ROLE()
+        );
+
+        bytes4[] memory worldAdminSelectors = new bytes4[](1);
+        worldAdminSelectors[0] = WorldRegistry.setDependencies.selector;
+        accessManager.setTargetFunctionRole(
+            address(worldRegistry),
+            worldAdminSelectors,
+            accessManager.ADMIN_ROLE()
+        );
+
+        bytes4[] memory spawnerSelectors = new bytes4[](1);
+        spawnerSelectors[0] = WorldRegistry.spawnEntity.selector;
+        accessManager.setTargetFunctionRole(
+            address(worldRegistry),
+            spawnerSelectors,
+            accessManager.SPAWNER_ROLE()
+        );
+
+        // Configure SpawnRegistry permissions
+        bytes4[] memory spawnManagerSelectors = new bytes4[](2);
+        spawnManagerSelectors[0] = SpawnRegistry.addValidSpawnWorld.selector;
+        spawnManagerSelectors[1] = SpawnRegistry.removeValidSpawnWorld.selector;
+        accessManager.setTargetFunctionRole(
+            address(spawnRegistry),
+            spawnManagerSelectors,
+            accessManager.SPAWN_MANAGER_ROLE()
+        );
+
+        bytes4[] memory spawnAdminSelectors = new bytes4[](1);
+        spawnAdminSelectors[0] = SpawnRegistry.setDependencies.selector;
+        accessManager.setTargetFunctionRole(
+            address(spawnRegistry),
+            spawnAdminSelectors,
+            accessManager.ADMIN_ROLE()
+        );
+
+        // Grant roles
+        accessManager.grantRole(
+            accessManager.WORLD_MANAGER_ROLE(),
+            address(this),
+            0
+        );
+        accessManager.grantRole(
+            accessManager.SPAWN_MANAGER_ROLE(),
+            address(this),
+            0
+        );
+
+        vm.stopPrank();
 
         // Connect registries
-        worldRegistry.setSpawnRegistry(spawnRegistry);
-        spawnRegistry.setWorldRegistry(worldRegistry);
+        vm.prank(admin);
+        worldRegistry.setDependencies(spawnRegistry);
+
+        vm.prank(admin);
+        spawnRegistry.setDependencies(worldRegistry);
 
         // Create GameWorldSquare
         world = new GameWorldSquare(
             WORLD_ID,
             WORLD_SIZE,
-            router,
-            IWorldRegistry(address(worldRegistry))
+            IWorldRegistry(address(worldRegistry)),
+            address(accessManager)
         );
 
-        // Set up roles for test
-        worldRegistry.grantRole(
-            worldRegistry.WORLD_MANAGER_ROLE(),
-            address(this)
+        // Configure GameWorldSquare permissions
+        vm.startPrank(admin);
+
+        bytes4[] memory portalManagerSelectors = new bytes4[](2);
+        portalManagerSelectors[0] = GameWorldSquare.createPortal.selector;
+        portalManagerSelectors[1] = GameWorldSquare.removePortal.selector;
+        accessManager.setTargetFunctionRole(
+            address(world),
+            portalManagerSelectors,
+            accessManager.PORTAL_MANAGER_ROLE()
         );
-        spawnRegistry.grantRole(
-            spawnRegistry.SPAWN_MANAGER_ROLE(),
-            address(this)
+
+        bytes4[] memory routerSelectors = new bytes4[](2);
+        routerSelectors[0] = GameWorldSquare.moveEntity.selector;
+        routerSelectors[1] = GameWorldSquare
+            .transferEntityThroughPortal
+            .selector;
+        accessManager.setTargetFunctionRole(
+            address(world),
+            routerSelectors,
+            accessManager.ROUTER_ROLE()
         );
-        worldRegistry.grantRole(worldRegistry.SPAWNER_ROLE(), address(world));
+
+        bytes4[] memory worldSpawnerSelectors = new bytes4[](2);
+        worldSpawnerSelectors[0] = GameWorldSquare.spawnEntity.selector;
+        worldSpawnerSelectors[1] = GameWorldSquare.despawnEntity.selector;
+        accessManager.setTargetFunctionRole(
+            address(world),
+            worldSpawnerSelectors,
+            accessManager.SPAWNER_ROLE()
+        );
+
+        // Grant roles for GameWorldSquare
+        accessManager.grantRole(
+            accessManager.PORTAL_MANAGER_ROLE(),
+            portalManager,
+            0
+        );
+        accessManager.grantRole(accessManager.ROUTER_ROLE(), router, 0);
+        accessManager.grantRole(accessManager.SPAWNER_ROLE(), spawner, 0);
+        accessManager.grantRole(
+            accessManager.SPAWNER_ROLE(),
+            address(world),
+            0
+        );
+
+        vm.stopPrank();
 
         // Register the world
         worldRegistry.registerWorld(IGameWorld(address(world)));
 
         // Add world as valid spawn point
         spawnRegistry.addValidSpawnWorld(WORLD_ID);
-
-        vm.prank(address(world));
-        world.grantRole(world.PORTAL_MANAGER_ROLE(), portalManager);
-        vm.prank(address(world));
-        world.grantRole(world.SPAWNER_ROLE(), spawner);
     }
 
     // ============ Helper Functions ============
@@ -170,9 +273,22 @@ contract GameWorldSquareTest is Test {
         GameWorldSquare otherWorld = new GameWorldSquare(
             2, // Different worldId
             WORLD_SIZE,
-            router,
-            IWorldRegistry(address(worldRegistry))
+            IWorldRegistry(address(worldRegistry)),
+            address(accessManager)
         );
+
+        // Configure permissions for the new world
+        vm.startPrank(admin);
+        bytes4[] memory otherWorldSpawnerSelectors = new bytes4[](2);
+        otherWorldSpawnerSelectors[0] = GameWorldSquare.spawnEntity.selector;
+        otherWorldSpawnerSelectors[1] = GameWorldSquare.despawnEntity.selector;
+        accessManager.setTargetFunctionRole(
+            address(otherWorld),
+            otherWorldSpawnerSelectors,
+            accessManager.SPAWNER_ROLE()
+        );
+        vm.stopPrank();
+
         worldRegistry.registerWorld(IGameWorld(address(otherWorld)));
 
         // Spawn entity in the first world
@@ -240,8 +356,8 @@ contract GameWorldSquareTest is Test {
         GameWorldSquare targetWorld = new GameWorldSquare(
             targetWorldId,
             WORLD_SIZE,
-            router,
-            IWorldRegistry(address(worldRegistry))
+            IWorldRegistry(address(worldRegistry)),
+            address(accessManager)
         );
 
         // Register the target world
@@ -251,9 +367,10 @@ contract GameWorldSquareTest is Test {
         spawnRegistry.addValidSpawnWorld(targetWorldId);
 
         // Grant SPAWNER_ROLE to targetWorld
-        worldRegistry.grantRole(
-            worldRegistry.SPAWNER_ROLE(),
-            address(targetWorld)
+        accessManager.grantRole(
+            accessManager.SPAWNER_ROLE(),
+            address(targetWorld),
+            0
         );
 
         IGameWorld.WorldPortal memory portal = world.getPortal(
@@ -396,16 +513,17 @@ contract GameWorldSquareTest is Test {
         GameWorldSquare targetWorld = new GameWorldSquare(
             targetWorldId,
             WORLD_SIZE,
-            router,
-            IWorldRegistry(address(worldRegistry))
+            IWorldRegistry(address(worldRegistry)),
+            address(accessManager)
         );
         worldRegistry.registerWorld(IGameWorld(address(targetWorld)));
 
         // Required to make the world valid for spawn
         spawnRegistry.addValidSpawnWorld(targetWorldId);
-        worldRegistry.grantRole(
-            worldRegistry.SPAWNER_ROLE(),
-            address(targetWorld)
+        accessManager.grantRole(
+            accessManager.SPAWNER_ROLE(),
+            address(targetWorld),
+            0
         );
 
         // Spawn entity in the first world

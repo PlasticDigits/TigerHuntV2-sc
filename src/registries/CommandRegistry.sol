@@ -3,77 +3,129 @@
 pragma solidity ^0.8.23;
 
 import {CommandStruct} from "../structs/CommandStruct.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import {IEntityNFT} from "../interfaces/IEntityNFT.sol";
 import {RegistryUtils} from "../libraries/RegistryUtils.sol";
+import {SetRegistryWrapper} from "./SetRegistryWrapper.sol";
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {TigerHuntAccessManager} from "../access/TigerHuntAccessManager.sol";
 
-contract CommandRegistry is AccessControl {
-    using EnumerableSet for EnumerableSet.Bytes32Set;
-    using RegistryUtils for mapping(IEntityNFT => EnumerableSet.Bytes32Set);
+contract CommandRegistry is AccessManaged {
+    bytes32 public constant SET_KEY_COMMAND_IDS =
+        keccak256("SET_KEY_COMMAND_IDS");
 
-    bytes32 public constant COMMAND_MANAGER_ROLE =
-        keccak256("COMMAND_MANAGER_ROLE");
+    bytes32 public constant SET_KEY_ENTITY_PAIR_IDS =
+        keccak256("SET_KEY_ENTITY_PAIR_IDS");
+
+    bytes32 public constant PARTIAL_SET_KEY_PAIR_ALLOWED_COMMANDS =
+        keccak256("PARTIAL_SET_KEY_PAIR_ALLOWED_COMMANDS");
+
+    SetRegistryWrapper private immutable _sets;
 
     // Mapping from command ID to command definition
     mapping(bytes32 commandId => CommandStruct command) private _commands;
 
-    // Mapping from source+target entity type pair to allowed commands
-    mapping(bytes32 sourceTargetPair => EnumerableSet.Bytes32Set commandIds)
-        private _pairAllowedCommands;
-
+    error CommandNotRegistered(bytes32 commandId);
     event CommandRegistered(bytes32 commandId);
     event CommandAllowed(
         IEntityNFT sourceEntityType,
         IEntityNFT targetEntityType,
         bytes32 commandId
     );
+    event CommandDisabled(
+        IEntityNFT sourceEntityType,
+        IEntityNFT targetEntityType,
+        bytes32 commandId
+    );
+
+    constructor(
+        SetRegistryWrapper sets,
+        address accessManager
+    ) AccessManaged(accessManager) {
+        _sets = sets;
+    }
 
     // Register a new command
     function registerCommand(
         CommandStruct calldata command
-    ) external onlyRole(COMMAND_MANAGER_ROLE) {
+    ) external restricted {
         _commands[command.commandId] = command;
+        _sets.typeBytes32().add(SET_KEY_COMMAND_IDS, command.commandId);
         emit CommandRegistered(command.commandId);
     }
 
     // Helper to create a key for source-target pair
-    function _getPairKey(
+    function getPairKey(
         IEntityNFT source,
         IEntityNFT target
-    ) internal pure returns (bytes32) {
-        return keccak256(abi.encode(source, target));
+    ) public pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    PARTIAL_SET_KEY_PAIR_ALLOWED_COMMANDS,
+                    source,
+                    target
+                )
+            );
     }
 
     // Helper to create a key for wildcard source
-    function _getWildcardSourceKey(
+    function getWildcardSourceKey(
         IEntityNFT target
-    ) internal pure returns (bytes32) {
-        return keccak256(abi.encode(IEntityNFT(address(0)), target));
+    ) public pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    PARTIAL_SET_KEY_PAIR_ALLOWED_COMMANDS,
+                    IEntityNFT(address(0)),
+                    target
+                )
+            );
     }
 
     // Helper to create a key for wildcard target
-    function _getWildcardTargetKey(
+    function getWildcardTargetKey(
         IEntityNFT source
-    ) internal pure returns (bytes32) {
-        return keccak256(abi.encode(source, IEntityNFT(address(0))));
+    ) public pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    PARTIAL_SET_KEY_PAIR_ALLOWED_COMMANDS,
+                    source,
+                    IEntityNFT(address(0))
+                )
+            );
     }
 
     // Allow an entity type to use a command on a target entity type
+    // For wildcard source, set source to address(0)
+    // For wildcard target, set target to address(0)
     function allowCommand(
         IEntityNFT sourceEntityType,
         IEntityNFT targetEntityType,
         bytes32 commandId
-    ) external onlyRole(COMMAND_MANAGER_ROLE) {
-        require(
-            _commands[commandId].commandId == commandId,
-            "Command not registered"
-        );
+    ) external restricted {
+        // Revert if command is not registered
+        if (!_sets.typeBytes32().contains(SET_KEY_COMMAND_IDS, commandId))
+            revert CommandNotRegistered(commandId);
 
-        bytes32 pairKey = _getPairKey(sourceEntityType, targetEntityType);
-        _pairAllowedCommands[pairKey].add(commandId);
+        // Add command ID to set of allowed commands for this pair, if not already present
+        bytes32 pairKey = getPairKey(sourceEntityType, targetEntityType);
+        _sets.typeBytes32().add(pairKey, commandId);
 
         emit CommandAllowed(sourceEntityType, targetEntityType, commandId);
+    }
+
+    function disableCommand(
+        IEntityNFT sourceEntityType,
+        IEntityNFT targetEntityType,
+        bytes32 commandId
+    ) external restricted {
+        // Remove command ID from set of allowed commands for this pair
+        bytes32 pairKey = getPairKey(sourceEntityType, targetEntityType);
+        _sets.typeBytes32().remove(pairKey, commandId);
+
+        emit CommandDisabled(sourceEntityType, targetEntityType, commandId);
     }
 
     // Check if command is valid for source entity targeting target entity
@@ -83,55 +135,20 @@ contract CommandRegistry is AccessControl {
         bytes32 commandId
     ) external view returns (bool) {
         // Check specific source-target pair
-        bytes32 pairKey = _getPairKey(sourceEntityType, targetEntityType);
-        bytes32 wildcardSourceKey = _getWildcardSourceKey(targetEntityType);
-        bytes32 wildcardTargetKey = _getWildcardTargetKey(sourceEntityType);
+        bytes32 pairKey = getPairKey(sourceEntityType, targetEntityType);
+        bytes32 wildcardSourceKey = getWildcardSourceKey(targetEntityType);
+        bytes32 wildcardTargetKey = getWildcardTargetKey(sourceEntityType);
 
-        if (_pairAllowedCommands[pairKey].contains(commandId)) return true;
-        if (_pairAllowedCommands[wildcardSourceKey].contains(commandId))
+        if (!_sets.typeBytes32().contains(SET_KEY_COMMAND_IDS, commandId))
+            return false;
+
+        if (_sets.typeBytes32().contains(pairKey, commandId)) return true;
+        if (_sets.typeBytes32().contains(wildcardSourceKey, commandId))
             return true;
-        if (_pairAllowedCommands[wildcardTargetKey].contains(commandId))
+        if (_sets.typeBytes32().contains(wildcardTargetKey, commandId))
             return true;
 
         return false;
-    }
-
-    function getAllowedCommands(
-        IEntityNFT sourceEntityType,
-        IEntityNFT targetEntityType
-    ) external view returns (bytes32[] memory) {
-        bytes32 pairKey = _getPairKey(sourceEntityType, targetEntityType);
-        bytes32 wildcardSourceKey = _getWildcardSourceKey(targetEntityType);
-        bytes32 wildcardTargetKey = _getWildcardTargetKey(sourceEntityType);
-
-        bytes32[] memory allowedCommands = new bytes32[](
-            _pairAllowedCommands[pairKey].length() +
-                _pairAllowedCommands[wildcardSourceKey].length() +
-                _pairAllowedCommands[wildcardTargetKey].length()
-        );
-
-        uint256 index = 0;
-        for (uint256 i = 0; i < _pairAllowedCommands[pairKey].length(); i++) {
-            allowedCommands[index++] = _pairAllowedCommands[pairKey].at(i);
-        }
-        for (
-            uint256 i = 0;
-            i < _pairAllowedCommands[wildcardSourceKey].length();
-            i++
-        ) {
-            allowedCommands[index++] = _pairAllowedCommands[wildcardSourceKey]
-                .at(i);
-        }
-        for (
-            uint256 i = 0;
-            i < _pairAllowedCommands[wildcardTargetKey].length();
-            i++
-        ) {
-            allowedCommands[index++] = _pairAllowedCommands[wildcardTargetKey]
-                .at(i);
-        }
-
-        return allowedCommands;
     }
 
     // Get command details
