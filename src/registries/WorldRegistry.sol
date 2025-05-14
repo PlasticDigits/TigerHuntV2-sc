@@ -6,82 +6,16 @@ import {IWorldRegistry} from "../interfaces/IWorldRegistry.sol";
 import {IGameWorld} from "../interfaces/IGameWorld.sol";
 import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import {RegistryUtils} from "../libraries/RegistryUtils.sol";
-import {SpawnRegistry} from "./SpawnRegistry.sol";
-import {GameEntity} from "../structs/GameEntity.sol";
-import {GameEntityUtils} from "../libraries/GameEntityUtils.sol";
-import {TigerHuntAccessManager} from "../access/TigerHuntAccessManager.sol";
 
 contract WorldRegistry is IWorldRegistry, AccessManaged {
-    using GameEntityUtils for GameEntity;
-
-    mapping(bytes32 entityKey => uint256 worldId) private _entityWorldIds;
     mapping(IGameWorld worldAddress => uint256 worldId) private _worldIds;
     mapping(uint256 worldId => IGameWorld worldAddress) private _worldIdToWorld;
     uint256 private _nextWorldId = 1;
 
-    event SpawnRegistrySet(SpawnRegistry spawnRegistry);
-    SpawnRegistry public spawnRegistry;
-
     constructor(address accessManager) AccessManaged(accessManager) {}
 
-    function setDependencies(SpawnRegistry _spawnRegistry) external restricted {
-        spawnRegistry = _spawnRegistry;
-        emit SpawnRegistrySet(spawnRegistry);
-    }
-
-    function getEntityWorldId(
-        GameEntity calldata gameEntity
-    ) external view returns (uint256) {
-        return _entityWorldIds[gameEntity.getKey()];
-    }
-
-    function updateEntityWorld(
-        GameEntity calldata gameEntity,
-        uint256 targetWorldId
-    ) external {
-        // If the target world is not registered, revert
-        // Unless it is 0, which means this is a despawn
-        if (
-            targetWorldId != 0 &&
-            _worldIdToWorld[targetWorldId] == IGameWorld(address(0))
-        ) revert RegistryUtils.InvalidWorld();
-
-        uint256 currentWorldId = _entityWorldIds[gameEntity.getKey()];
-
-        // Only allow spawning through spawnEntity
-        if (currentWorldId == 0) revert RegistryUtils.EntityNotInWorld();
-
-        // Only allow the current world to update the game entity's world
-        if (currentWorldId != _worldIds[IGameWorld(msg.sender)])
-            revert RegistryUtils.Unauthorized();
-
-        _entityWorldIds[gameEntity.getKey()] = targetWorldId;
-        emit EntityWorldChanged(gameEntity, currentWorldId, targetWorldId);
-    }
-
-    function spawnEntity(
-        GameEntity calldata gameEntity,
-        uint256 targetWorldId
-    ) external restricted {
-        // Check if the target world is a valid spawn point
-        if (!spawnRegistry.validSpawnWorlds(targetWorldId))
-            revert RegistryUtils.InvalidWorld();
-
-        // Check if entity is already in a world
-        if (_entityWorldIds[gameEntity.getKey()] != 0)
-            revert RegistryUtils.EntityAlreadyInWorld();
-
-        // Check if the targetWorld is the calling contract
-        if (_worldIds[IGameWorld(msg.sender)] != targetWorldId)
-            revert RegistryUtils.Unauthorized();
-
-        // Update entity world
-        _entityWorldIds[gameEntity.getKey()] = targetWorldId;
-        emit EntityWorldChanged(gameEntity, 0, targetWorldId);
-    }
-
     function registerWorld(IGameWorld world) external restricted {
-        if (_worldIds[world] != 0) revert RegistryUtils.AlreadyRegistered();
+        if (_worldIds[world] != 0) revert AlreadyRegistered();
 
         uint256 worldId = _nextWorldId++;
         _worldIds[world] = worldId;
@@ -90,7 +24,7 @@ contract WorldRegistry is IWorldRegistry, AccessManaged {
     }
 
     function unregisterWorld(IGameWorld world) external restricted {
-        if (_worldIds[world] == 0) revert RegistryUtils.NotRegistered();
+        if (_worldIds[world] == 0) revert NotRegistered();
 
         uint256 worldId = _worldIds[world];
         delete _worldIds[world];
@@ -110,14 +44,5 @@ contract WorldRegistry is IWorldRegistry, AccessManaged {
         uint256 worldId
     ) external view returns (IGameWorld) {
         return _worldIdToWorld[worldId];
-    }
-
-    function getAreEntitiesInSameWorld(
-        GameEntity calldata gameEntity1,
-        GameEntity calldata gameEntity2
-    ) external view returns (bool) {
-        return
-            _entityWorldIds[gameEntity1.getKey()] ==
-            _entityWorldIds[gameEntity2.getKey()];
     }
 }

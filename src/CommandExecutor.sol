@@ -9,12 +9,16 @@ import {CommandStruct} from "./structs/CommandStruct.sol";
 import {CommandRegistry} from "./registries/CommandRegistry.sol";
 import {IWorldRegistry} from "./interfaces/IWorldRegistry.sol";
 import {IEntityNFT} from "./interfaces/IEntityNFT.sol";
-import {ICommandImplementer} from "./interfaces/ICommandImplementer.sol";
+import {ICmdImplSelf} from "./interfaces/ICommandImplementer.sol";
+import {ICmdImplEntity} from "./interfaces/ICommandImplementer.sol";
+import {ICmdImplWorld} from "./interfaces/ICommandImplementer.sol";
+import {IEntityWorldDatastore} from "./interfaces/IEntityWorldDatastore.sol";
 
 contract CommandExecutor {
     using GameEntityUtils for GameEntity;
     CommandRegistry public immutable COMMAND_REGISTRY;
     IWorldRegistry public immutable WORLD_REGISTRY;
+    IEntityWorldDatastore public immutable ENTITY_WORLD_DATASTORE;
 
     error CommandNotUsableByEntity();
     error CommandOnCooldown();
@@ -32,12 +36,18 @@ contract CommandExecutor {
     // Store GameEntity unlock time for duration commands
     mapping(bytes32 gameEntityKey => uint256 unlockTime) private _unlockTime;
 
+    // Store allowed commands for a game entity
+    mapping(bytes32 gameEntityKey => bytes32 allowedCommandsKey)
+        private _allowedCommandsKey;
+
     constructor(
         CommandRegistry _commandRegistry,
-        IWorldRegistry _worldRegistry
+        IWorldRegistry _worldRegistry,
+        IEntityWorldDatastore _entityWorldDatastore
     ) {
         COMMAND_REGISTRY = _commandRegistry;
         WORLD_REGISTRY = _worldRegistry;
+        ENTITY_WORLD_DATASTORE = _entityWorldDatastore;
     }
 
     function executeCommand(
@@ -136,7 +146,7 @@ contract CommandExecutor {
 
     function _executeWorldCommand(
         bytes32 commandId,
-        ICommandImplementer implementer,
+        ICmdImplWorld implementer,
         GameEntity calldata entity,
         bytes calldata commandData
     ) internal {
@@ -145,7 +155,7 @@ contract CommandExecutor {
 
     function _executeSelfCommand(
         bytes32 commandId,
-        ICommandImplementer implementer,
+        ICmdImplSelf implementer,
         GameEntity calldata entity,
         bytes calldata commandData
     ) internal {
@@ -154,14 +164,14 @@ contract CommandExecutor {
 
     function _executeEntityCommand(
         bytes32 commandId,
-        ICommandImplementer implementer,
+        ICmdImplEntity implementer,
         GameEntity calldata sourceEntity,
         GameEntity calldata targetEntity,
         bytes calldata commandData
     ) internal {
         // Check entities are in same world and tile
         if (
-            !WORLD_REGISTRY.getAreEntitiesInSameWorld(
+            !ENTITY_WORLD_DATASTORE.getAreEntitiesInSameWorld(
                 sourceEntity,
                 targetEntity
             )
@@ -169,7 +179,7 @@ contract CommandExecutor {
         if (
             !WORLD_REGISTRY
                 .getWorldFromWorldId(
-                    WORLD_REGISTRY.getEntityWorldId(sourceEntity)
+                    ENTITY_WORLD_DATASTORE.getEntityWorldId(sourceEntity)
                 )
                 .areEntitiesInSameTile(sourceEntity, targetEntity)
         ) revert EntitiesNotInSameTile();

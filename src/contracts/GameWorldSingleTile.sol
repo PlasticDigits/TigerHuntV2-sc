@@ -14,26 +14,28 @@ import {IEntityWorldDatastore} from "../interfaces/IEntityWorldDatastore.sol";
 import {IEntityWorldReducer} from "../interfaces/IEntityWorldReducer.sol";
 import {TigerHuntAccessManager} from "../access/TigerHuntAccessManager.sol";
 
-contract GameWorldSquare is IGameWorld, AccessManaged {
+contract GameWorldSingleTile is IGameWorld, AccessManaged {
     using EnumerableSet for EnumerableSet.UintSet;
     using CoordinatePacking for IGameWorld.PackedTileCoordinate;
     using GameEntityUtils for GameEntity;
 
     // World configuration
     uint256 public immutable WORLD_ID;
-    uint256 public immutable WORLD_SIZE;
+    uint256 public constant WORLD_SIZE = 1; // Single tile world
     IWorldRegistry public immutable WORLD_REGISTRY;
     IEntityWorldDatastore public immutable ENTITY_WORLD_DATASTORE;
     IEntityWorldReducer public immutable ENTITY_WORLD_REDUCER;
 
+    // Single tile coordinate - always (0,0,0)
+    PackedTileCoordinate private immutable SINGLE_TILE;
+    bytes32 private immutable SINGLE_TILE_KEY;
+
     // Entity state tracking
     struct EntityState {
-        PackedTileCoordinate tile;
         bool isActive;
     }
     mapping(bytes32 entityRefKey => EntityState state) private _entityStates;
-    mapping(bytes32 tileKey => EnumerableSet.UintSet entityRefKeys)
-        private _tileToEntityKeys;
+    EnumerableSet.UintSet private _worldEntities;
     mapping(bytes32 entityRefKey => GameEntity entity) private _gameEntities;
 
     // Portal management
@@ -42,28 +44,24 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
         bool isActive;
     }
     mapping(uint256 portalId => PortalInfo portal) private _portals;
-    mapping(bytes32 tileKey => uint256 portalId) private _tileToPortalId;
     EnumerableSet.UintSet private _activePortalIds;
     uint256 private _nextPortalId = 1;
 
-    // Events
-    event WorldSizeSet(uint256 size);
-
     constructor(
         uint256 _worldId,
-        uint256 _worldSize,
         IWorldRegistry _worldRegistry,
         IEntityWorldDatastore _entityWorldDatastore,
         IEntityWorldReducer _entityWorldReducer,
         address _accessManager
     ) AccessManaged(_accessManager) {
         WORLD_ID = _worldId;
-        WORLD_SIZE = _worldSize;
         WORLD_REGISTRY = _worldRegistry;
         ENTITY_WORLD_DATASTORE = _entityWorldDatastore;
         ENTITY_WORLD_REDUCER = _entityWorldReducer;
 
-        emit WorldSizeSet(_worldSize);
+        // Initialize the single tile at (0,0,0)
+        SINGLE_TILE = CoordinatePacking.packCoordinate(0, 0, 0);
+        SINGLE_TILE_KEY = SINGLE_TILE.getKey();
     }
 
     // ============ Portal Management ============
@@ -75,31 +73,25 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
         uint256 targetWorldId
     ) external restricted returns (uint256 portalId) {
         if (_worldId != WORLD_ID) revert InvalidWorldId();
-        if (_tileToPortalId[sourceTile.getKey()] != 0)
-            revert PortalAlreadyExists();
 
-        // Validate coordinates are within world bounds
-        (int64 x, int64 y) = CoordinatePacking.unpackSquareCoordinate(
-            sourceTile
-        );
-        if (uint64(x) >= WORLD_SIZE || uint64(y) >= WORLD_SIZE)
-            revert WorldSizeExceeded();
+        // Verify source tile is the single tile
+        if (sourceTile.packed != SINGLE_TILE.packed)
+            revert InvalidTileCoordinate();
 
         portalId = _nextPortalId++;
         WorldPortal memory portal = WorldPortal({
-            sourceTile: sourceTile,
+            sourceTile: SINGLE_TILE, // Always use the single tile
             targetTile: targetTile,
             targetWorldId: targetWorldId
         });
 
         _portals[portalId] = PortalInfo({portal: portal, isActive: true});
-        _tileToPortalId[sourceTile.getKey()] = portalId;
         _activePortalIds.add(portalId);
 
         emit PortalCreated(
             portalId,
             WORLD_ID,
-            sourceTile,
+            SINGLE_TILE,
             targetTile,
             targetWorldId
         );
@@ -112,8 +104,6 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
         if (_worldId != WORLD_ID) revert InvalidWorldId();
         if (!_activePortalIds.contains(portalId)) revert PortalNotFound();
 
-        PortalInfo storage portalInfo = _portals[portalId];
-        delete _tileToPortalId[portalInfo.portal.sourceTile.getKey()];
         _activePortalIds.remove(portalId);
         delete _portals[portalId];
 
@@ -122,59 +112,48 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
 
     // ============ Entity Movement ============
 
-    function _updateEntityTile(
-        bytes32 entityKey,
-        bytes32 fromTileKey,
-        bytes32 toTileKey
-    ) private {
-        _tileToEntityKeys[fromTileKey].remove(uint256(entityKey));
-        _tileToEntityKeys[toTileKey].add(uint256(entityKey));
-    }
-
     function moveEntity(
         GameEntity calldata gameEntity,
         PackedTileCoordinate calldata fromTile,
         PackedTileCoordinate calldata toTile
     ) external restricted {
-        // Verify entity is in the correct tile
+        // In a single-tile world, entities can only move from the single tile to itself
+        if (
+            fromTile.packed != SINGLE_TILE.packed ||
+            toTile.packed != SINGLE_TILE.packed
+        ) {
+            revert InvalidTileCoordinate();
+        }
+
+        // Verify entity is active
         bytes32 entityKey = gameEntity.getKey();
         EntityState storage state = _entityStates[entityKey];
         if (!state.isActive) revert EntityNotInWorld();
         if (ENTITY_WORLD_DATASTORE.getEntityWorldId(gameEntity) != WORLD_ID)
             revert EntityNotInWorld();
-        if (state.tile.packed != fromTile.packed) revert EntityNotInTile();
 
-        // Validate new coordinates
-        (int64 x, int64 y) = CoordinatePacking.unpackSquareCoordinate(toTile);
-        if (uint64(x) >= WORLD_SIZE || uint64(y) >= WORLD_SIZE)
-            revert WorldSizeExceeded();
-
-        // Update entity state and tile tracking
-        bytes32 fromTileKey = fromTile.getKey();
-        bytes32 toTileKey = toTile.getKey();
-        _updateEntityTile(entityKey, fromTileKey, toTileKey);
-        state.tile = toTile;
-
-        emit EntityMoved(gameEntity, fromTile, toTile);
+        // No movement occurs, but we emit the event for tracking
+        emit EntityMoved(gameEntity, SINGLE_TILE, SINGLE_TILE);
     }
 
     function transferEntityThroughPortal(
         GameEntity calldata gameEntity,
         WorldPortal calldata portal
     ) external restricted {
-        // Verify entity is in the correct tile
+        // Verify portal is valid
+        if (portal.sourceTile.packed != SINGLE_TILE.packed)
+            revert InvalidTileCoordinate();
+
+        // Verify entity is active
         bytes32 entityKey = gameEntity.getKey();
         EntityState storage state = _entityStates[entityKey];
         if (!state.isActive) revert EntityNotInWorld();
         if (ENTITY_WORLD_DATASTORE.getEntityWorldId(gameEntity) != WORLD_ID)
             revert EntityNotInWorld();
-        if (state.tile.packed != portal.sourceTile.packed)
-            revert EntityNotInTile();
 
-        // Update entity state and tile tracking
-        bytes32 fromTileKey = portal.sourceTile.getKey();
-        _updateEntityTile(entityKey, fromTileKey, bytes32(0)); // Remove from current tile
-        state.isActive = false; // Mark as inactive in this world
+        // Mark entity as inactive in this world
+        state.isActive = false;
+        _worldEntities.remove(uint256(entityKey));
 
         // Update world through the reducer
         ENTITY_WORLD_REDUCER.moveEntityBetweenWorlds(
@@ -185,7 +164,7 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
         // Clear entity state
         _clearEntityState(entityKey);
 
-        emit EntityExitedWorld(gameEntity, WORLD_ID, portal.sourceTile);
+        emit EntityExitedWorld(gameEntity, WORLD_ID, SINGLE_TILE);
         emit EntityEnteredWorld(
             gameEntity,
             portal.targetWorldId,
@@ -199,28 +178,22 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
         GameEntity calldata gameEntity,
         PackedTileCoordinate calldata tile
     ) external restricted {
+        // Ensure the tile is the single tile
+        if (tile.packed != SINGLE_TILE.packed) revert InvalidTileCoordinate();
+
         bytes32 entityKey = gameEntity.getKey();
         _gameEntities[entityKey] = gameEntity;
         EntityState storage state = _entityStates[entityKey];
         if (state.isActive) revert EntityAlreadyInWorld();
 
-        // Validate coordinates
-        (int64 x, int64 y) = CoordinatePacking.unpackSquareCoordinate(tile);
-        if (uint64(x) >= WORLD_SIZE || uint64(y) >= WORLD_SIZE)
-            revert WorldSizeExceeded();
-
         // Set entity state
-        state.tile = tile;
         state.isActive = true;
+        _worldEntities.add(uint256(entityKey));
 
-        // Request spawning through EntityWorldReducer instead of WorldRegistry
+        // Request spawning through EntityWorldReducer
         ENTITY_WORLD_REDUCER.spawnEntity(gameEntity, WORLD_ID);
 
-        // Update tile tracking
-        bytes32 tileKey = tile.getKey();
-        _tileToEntityKeys[tileKey].add(uint256(entityKey));
-
-        emit EntitySpawned(gameEntity, WORLD_ID, tile);
+        emit EntitySpawned(gameEntity, WORLD_ID, SINGLE_TILE);
     }
 
     function despawnEntity(GameEntity calldata gameEntity) external restricted {
@@ -230,25 +203,20 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
         if (ENTITY_WORLD_DATASTORE.getEntityWorldId(gameEntity) != WORLD_ID)
             revert EntityNotInWorld();
 
-        // Update tile tracking
-        bytes32 tileKey = state.tile.getKey();
-        _tileToEntityKeys[tileKey].remove(uint256(entityKey));
+        // Remove from world entities
+        _worldEntities.remove(uint256(entityKey));
 
-        // Update world through reducer instead of registry
+        // Update world through reducer
         ENTITY_WORLD_REDUCER.moveEntityBetweenWorlds(gameEntity, 0);
 
         // Clear entity state
         _clearEntityState(entityKey);
 
-        emit EntityDespawned(gameEntity, WORLD_ID, state.tile);
+        emit EntityDespawned(gameEntity, WORLD_ID, SINGLE_TILE);
     }
 
     function _clearEntityState(bytes32 entityKey) private {
-        EntityState storage state = _entityStates[entityKey];
-        delete state.isActive;
-        delete state.tile.packed;
-        delete state.tile;
-        delete _entityStates[entityKey];
+        delete _entityStates[entityKey].isActive;
 
         GameEntity storage gameEntity = _gameEntities[entityKey];
         delete gameEntity.entityNFT;
@@ -271,7 +239,7 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
     {
         EntityState storage state = _entityStates[gameEntity.getKey()];
         return (
-            state.tile,
+            SINGLE_TILE,
             ENTITY_WORLD_DATASTORE.getEntityWorldId(gameEntity),
             state.isActive
         );
@@ -323,8 +291,15 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
         PackedTileCoordinate calldata tile
     ) external view returns (bool, uint256) {
         if (_worldId != WORLD_ID) revert InvalidWorldId();
-        uint256 portalId = _tileToPortalId[tile.getKey()];
-        return (portalId != 0, portalId);
+        // All portals in this world are at the single tile
+        if (tile.packed != SINGLE_TILE.packed) return (false, 0);
+
+        // Return the first portal if any exist
+        if (_activePortalIds.length() > 0) {
+            return (true, _activePortalIds.at(0));
+        }
+
+        return (false, 0);
     }
 
     // ============ Helper Functions ============
@@ -346,42 +321,8 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
     function getNeighboringTiles(
         PackedTileCoordinate calldata tile
     ) external view returns (PackedTileCoordinate[] memory) {
-        (int64 x, int64 y) = CoordinatePacking.unpackSquareCoordinate(tile);
-
-        // In a square world, we have 4 neighbors (up, down, left, right)
-        PackedTileCoordinate[] memory neighbors = new PackedTileCoordinate[](4);
-        uint256 count = 0;
-
-        // Check each direction
-        int64[4] memory dx = [int64(0), int64(0), int64(-1), int64(1)];
-        int64[4] memory dy = [int64(-1), int64(1), int64(0), int64(0)];
-
-        for (uint256 i = 0; i < 4; i++) {
-            int64 newX = x + dx[i];
-            int64 newY = y + dy[i];
-
-            // Only add valid coordinates
-            if (
-                newX >= 0 &&
-                uint64(newX) < WORLD_SIZE &&
-                newY >= 0 &&
-                uint64(newY) < WORLD_SIZE
-            ) {
-                neighbors[count] = CoordinatePacking.packSquareCoordinate(
-                    newX,
-                    newY
-                );
-                count++;
-            }
-        }
-
-        // Resize array to actual number of neighbors
-        PackedTileCoordinate[]
-            memory resizedNeighbors = new PackedTileCoordinate[](count);
-        for (uint256 i = 0; i < count; i++) {
-            resizedNeighbors[i] = neighbors[i];
-        }
-        return resizedNeighbors;
+        // Single tile world has no neighbors
+        return new PackedTileCoordinate[](0);
     }
 
     function getEntitiesInTile(
@@ -389,10 +330,12 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
         uint256 startIndex,
         uint256 count
     ) external view returns (GameEntity[] memory entities) {
-        bytes32 tileKey = tile.getKey();
-        EnumerableSet.UintSet storage entityKeys = _tileToEntityKeys[tileKey];
-        uint256 totalEntities = entityKeys.length();
+        // Only return entities if the specified tile is the single tile
+        if (tile.packed != SINGLE_TILE.packed) {
+            return new GameEntity[](0);
+        }
 
+        uint256 totalEntities = _worldEntities.length();
         if (startIndex >= totalEntities) {
             return new GameEntity[](0);
         }
@@ -406,8 +349,7 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
         entities = new GameEntity[](resultCount);
 
         for (uint256 i = 0; i < resultCount; i++) {
-            bytes32 entityKey = bytes32(entityKeys.at(startIndex + i));
-            // Get the stored entity directly from our mapping
+            bytes32 entityKey = bytes32(_worldEntities.at(startIndex + i));
             entities[i] = _gameEntities[entityKey];
         }
 
@@ -418,17 +360,20 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
         GameEntity calldata gameEntity,
         PackedTileCoordinate calldata tile
     ) external view returns (bool) {
+        // Entity can only be in the single tile
+        if (tile.packed != SINGLE_TILE.packed) return false;
+
         EntityState storage state = _entityStates[gameEntity.getKey()];
         return
             state.isActive &&
-            ENTITY_WORLD_DATASTORE.getEntityWorldId(gameEntity) == WORLD_ID &&
-            state.tile.packed == tile.packed;
+            ENTITY_WORLD_DATASTORE.getEntityWorldId(gameEntity) == WORLD_ID;
     }
 
     function areEntitiesInSameTile(
         GameEntity calldata gameEntity1,
         GameEntity calldata gameEntity2
     ) external view returns (bool) {
+        // All entities in this world are in the same tile
         EntityState storage state1 = _entityStates[gameEntity1.getKey()];
         EntityState storage state2 = _entityStates[gameEntity2.getKey()];
 
@@ -436,8 +381,7 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
             state1.isActive &&
             state2.isActive &&
             ENTITY_WORLD_DATASTORE.getEntityWorldId(gameEntity1) == WORLD_ID &&
-            ENTITY_WORLD_DATASTORE.getEntityWorldId(gameEntity2) == WORLD_ID &&
-            state1.tile.packed == state2.tile.packed;
+            ENTITY_WORLD_DATASTORE.getEntityWorldId(gameEntity2) == WORLD_ID;
     }
 
     function getEntityTile(
@@ -445,7 +389,8 @@ contract GameWorldSquare is IGameWorld, AccessManaged {
     ) external view returns (PackedTileCoordinate memory) {
         EntityState storage state = _entityStates[gameEntity.getKey()];
         if (!state.isActive) revert EntityNotInWorld();
-        return state.tile;
+        // Always return the single tile
+        return SINGLE_TILE;
     }
 
     function getEntityWorldId(

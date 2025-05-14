@@ -14,11 +14,18 @@ import {IEntityNFT} from "../src/interfaces/IEntityNFT.sol";
 import {GameEntity} from "../src/structs/GameEntity.sol";
 import {TigerHuntAccessManager} from "../src/access/TigerHuntAccessManager.sol";
 
+import {EntityWorldDatastore} from "../src/registries/EntityWorldDatastore.sol";
+import {EntityWorldReducer} from "../src/registries/EntityWorldReducer.sol";
+import {IEntityWorldDatastore} from "../src/interfaces/IEntityWorldDatastore.sol";
+import {IEntityWorldReducer} from "../src/interfaces/IEntityWorldReducer.sol";
+
 contract GameWorldSquareTest is Test {
     GameWorldSquare public world;
     MockEntityNFT public mockEntity;
     WorldRegistry public worldRegistry;
     SpawnRegistry public spawnRegistry;
+    EntityWorldDatastore public entityWorldDatastore;
+    EntityWorldReducer public entityWorldReducer;
     TigerHuntAccessManager public accessManager;
     address public router;
     address public portalManager;
@@ -38,9 +45,11 @@ contract GameWorldSquareTest is Test {
         // Create AccessManager
         accessManager = new TigerHuntAccessManager(admin);
 
-        // Create and set up WorldRegistry and SpawnRegistry
+        // Create and set up WorldRegistry, SpawnRegistry, EntityWorldDatastore, and EntityWorldReducer
         worldRegistry = new WorldRegistry(address(accessManager));
         spawnRegistry = new SpawnRegistry(address(accessManager));
+        entityWorldDatastore = new EntityWorldDatastore(address(accessManager));
+        entityWorldReducer = new EntityWorldReducer(address(accessManager));
 
         // Set up permissions
         vm.startPrank(admin);
@@ -53,22 +62,6 @@ contract GameWorldSquareTest is Test {
             address(worldRegistry),
             worldManagerSelectors,
             accessManager.WORLD_MANAGER_ROLE()
-        );
-
-        bytes4[] memory worldAdminSelectors = new bytes4[](1);
-        worldAdminSelectors[0] = WorldRegistry.setDependencies.selector;
-        accessManager.setTargetFunctionRole(
-            address(worldRegistry),
-            worldAdminSelectors,
-            accessManager.ADMIN_ROLE()
-        );
-
-        bytes4[] memory spawnerSelectors = new bytes4[](1);
-        spawnerSelectors[0] = WorldRegistry.spawnEntity.selector;
-        accessManager.setTargetFunctionRole(
-            address(worldRegistry),
-            spawnerSelectors,
-            accessManager.SPAWNER_ROLE()
         );
 
         // Configure SpawnRegistry permissions
@@ -89,6 +82,32 @@ contract GameWorldSquareTest is Test {
             accessManager.ADMIN_ROLE()
         );
 
+        // Configure EntityWorldDatastore permissions
+        bytes4[] memory datastoreSelectors = new bytes4[](1);
+        datastoreSelectors[0] = EntityWorldDatastore.setEntityWorldId.selector;
+        accessManager.setTargetFunctionRole(
+            address(entityWorldDatastore),
+            datastoreSelectors,
+            accessManager.ADMIN_ROLE()
+        );
+
+        // Configure EntityWorldReducer permissions
+        bytes4[] memory reducerSelectors = new bytes4[](1);
+        reducerSelectors[0] = EntityWorldReducer.setDependencies.selector;
+        accessManager.setTargetFunctionRole(
+            address(entityWorldReducer),
+            reducerSelectors,
+            accessManager.ADMIN_ROLE()
+        );
+
+        bytes4[] memory spawnerReducerSelectors = new bytes4[](1);
+        spawnerReducerSelectors[0] = EntityWorldReducer.spawnEntity.selector;
+        accessManager.setTargetFunctionRole(
+            address(entityWorldReducer),
+            spawnerReducerSelectors,
+            accessManager.SPAWNER_ROLE()
+        );
+
         // Grant roles
         accessManager.grantRole(
             accessManager.WORLD_MANAGER_ROLE(),
@@ -105,16 +124,22 @@ contract GameWorldSquareTest is Test {
 
         // Connect registries
         vm.prank(admin);
-        worldRegistry.setDependencies(spawnRegistry);
+        spawnRegistry.setDependencies(worldRegistry);
 
         vm.prank(admin);
-        spawnRegistry.setDependencies(worldRegistry);
+        entityWorldReducer.setDependencies(
+            worldRegistry,
+            spawnRegistry,
+            entityWorldDatastore
+        );
 
         // Create GameWorldSquare
         world = new GameWorldSquare(
             WORLD_ID,
             WORLD_SIZE,
             IWorldRegistry(address(worldRegistry)),
+            IEntityWorldDatastore(address(entityWorldDatastore)),
+            IEntityWorldReducer(address(entityWorldReducer)),
             address(accessManager)
         );
 
@@ -161,6 +186,11 @@ contract GameWorldSquareTest is Test {
         accessManager.grantRole(
             accessManager.SPAWNER_ROLE(),
             address(world),
+            0
+        );
+        accessManager.grantRole(
+            accessManager.SPAWNER_ROLE(),
+            address(entityWorldReducer),
             0
         );
 
@@ -274,6 +304,8 @@ contract GameWorldSquareTest is Test {
             2, // Different worldId
             WORLD_SIZE,
             IWorldRegistry(address(worldRegistry)),
+            IEntityWorldDatastore(address(entityWorldDatastore)),
+            IEntityWorldReducer(address(entityWorldReducer)),
             address(accessManager)
         );
 
@@ -295,11 +327,11 @@ contract GameWorldSquareTest is Test {
         vm.prank(spawner);
         world.spawnEntity(gameEntity, fromTile);
 
-        // Manually change the entity's world in the registry to simulate entity in wrong world
+        // Manually change the entity's world in the datastore to simulate entity in wrong world
         vm.mockCall(
-            address(worldRegistry),
+            address(entityWorldDatastore),
             abi.encodeWithSelector(
-                IWorldRegistry.getEntityWorldId.selector,
+                IEntityWorldDatastore.getEntityWorldId.selector,
                 gameEntity
             ),
             abi.encode(2) // Return worldId 2 instead of 1
@@ -342,7 +374,7 @@ contract GameWorldSquareTest is Test {
 
         vm.prank(spawner);
         world.spawnEntity(gameEntity, sourceTile);
-        assertEq(worldRegistry.getEntityWorldId(gameEntity), WORLD_ID);
+        assertEq(entityWorldDatastore.getEntityWorldId(gameEntity), WORLD_ID);
 
         vm.prank(portalManager);
         uint256 portalId = world.createPortal(
@@ -357,6 +389,8 @@ contract GameWorldSquareTest is Test {
             targetWorldId,
             WORLD_SIZE,
             IWorldRegistry(address(worldRegistry)),
+            IEntityWorldDatastore(address(entityWorldDatastore)),
+            IEntityWorldReducer(address(entityWorldReducer)),
             address(accessManager)
         );
 
@@ -390,10 +424,16 @@ contract GameWorldSquareTest is Test {
         ) = world.getEntityState(gameEntity);
         assertFalse(isActive);
         assertEq(worldId, targetWorldId);
-        assertEq(worldRegistry.getEntityWorldId(gameEntity), targetWorldId);
+        assertEq(
+            entityWorldDatastore.getEntityWorldId(gameEntity),
+            targetWorldId
+        );
 
         // Skip trying to spawn in target world - we just assert it's in the right world
-        assertEq(worldRegistry.getEntityWorldId(gameEntity), targetWorldId);
+        assertEq(
+            entityWorldDatastore.getEntityWorldId(gameEntity),
+            targetWorldId
+        );
 
         // The entity isn't actually active in the target world yet in this test
         // In a real scenario, the target world would need to handle incoming entities
@@ -426,11 +466,11 @@ contract GameWorldSquareTest is Test {
             WORLD_ID
         );
 
-        // Manually change the entity's world in the registry
+        // Manually change the entity's world in the datastore
         vm.mockCall(
-            address(worldRegistry),
+            address(entityWorldDatastore),
             abi.encodeWithSelector(
-                IWorldRegistry.getEntityWorldId.selector,
+                IEntityWorldDatastore.getEntityWorldId.selector,
                 gameEntity
             ),
             abi.encode(3) // A different world ID
@@ -514,6 +554,8 @@ contract GameWorldSquareTest is Test {
             targetWorldId,
             WORLD_SIZE,
             IWorldRegistry(address(worldRegistry)),
+            IEntityWorldDatastore(address(entityWorldDatastore)),
+            IEntityWorldReducer(address(entityWorldReducer)),
             address(accessManager)
         );
         worldRegistry.registerWorld(IGameWorld(address(targetWorld)));
@@ -537,7 +579,7 @@ contract GameWorldSquareTest is Test {
         // Verify despawn was successful
         (, , bool isActive) = world.getEntityState(gameEntity);
         assertFalse(isActive);
-        assertEq(worldRegistry.getEntityWorldId(gameEntity), 0);
+        assertEq(entityWorldDatastore.getEntityWorldId(gameEntity), 0);
     }
 
     function test_DespawnEntity_WrongWorld() public {
@@ -548,11 +590,11 @@ contract GameWorldSquareTest is Test {
         vm.prank(spawner);
         world.spawnEntity(gameEntity, tile);
 
-        // Manually change the entity's world in the registry
+        // Manually change the entity's world in the datastore
         vm.mockCall(
-            address(worldRegistry),
+            address(entityWorldDatastore),
             abi.encodeWithSelector(
-                IWorldRegistry.getEntityWorldId.selector,
+                IEntityWorldDatastore.getEntityWorldId.selector,
                 gameEntity
             ),
             abi.encode(3) // A different world ID

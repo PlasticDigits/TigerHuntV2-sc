@@ -11,10 +11,16 @@ import {TigerHuntAccessManager} from "../src/access/TigerHuntAccessManager.sol";
 import {RegistryUtils} from "../src/libraries/RegistryUtils.sol";
 import {IEntityNFT} from "../src/interfaces/IEntityNFT.sol";
 import {GameEntity} from "../src/structs/GameEntity.sol";
+import {EntityWorldDatastore} from "../src/registries/EntityWorldDatastore.sol";
+import {EntityWorldReducer} from "../src/registries/EntityWorldReducer.sol";
+import {IEntityWorldDatastore} from "../src/interfaces/IEntityWorldDatastore.sol";
+import {IEntityWorldReducer} from "../src/interfaces/IEntityWorldReducer.sol";
 
 contract SpawnRegistryTest is Test {
     SpawnRegistry public spawnRegistry;
     WorldRegistry public worldRegistry;
+    EntityWorldDatastore public entityWorldDatastore;
+    EntityWorldReducer public entityWorldReducer;
     TigerHuntAccessManager public accessManager;
     MockEntityNFT public entityNft1;
     MockEntityNFT public entityNft2;
@@ -56,9 +62,40 @@ contract SpawnRegistryTest is Test {
         entityNft2.mint(entityHolder, 2);
         gameEntity4 = GameEntity({entityNFT: entityNft2, entityId: 2});
 
-        // Setup permissions
-        vm.startPrank(admin);
+        // Create and set up EntityWorldDatastore and EntityWorldReducer
+        entityWorldDatastore = new EntityWorldDatastore(address(accessManager));
+        entityWorldReducer = new EntityWorldReducer(address(accessManager));
 
+        vm.startPrank(admin);
+        // Configure permissions for EntityWorldDatastore
+        bytes4[] memory datastoreSelectors = new bytes4[](1);
+        datastoreSelectors[0] = EntityWorldDatastore.setEntityWorldId.selector;
+        accessManager.setTargetFunctionRole(
+            address(entityWorldDatastore),
+            datastoreSelectors,
+            accessManager.ADMIN_ROLE()
+        );
+        // Configure permissions for EntityWorldReducer
+        bytes4[] memory reducerSelectors = new bytes4[](1);
+        reducerSelectors[0] = EntityWorldReducer.setDependencies.selector;
+        accessManager.setTargetFunctionRole(
+            address(entityWorldReducer),
+            reducerSelectors,
+            accessManager.ADMIN_ROLE()
+        );
+        bytes4[] memory spawnerReducerSelectors = new bytes4[](1);
+        spawnerReducerSelectors[0] = EntityWorldReducer.spawnEntity.selector;
+        accessManager.setTargetFunctionRole(
+            address(entityWorldReducer),
+            spawnerReducerSelectors,
+            accessManager.SPAWNER_ROLE()
+        );
+        // Grant SPAWNER_ROLE to world1 for reducer
+        accessManager.grantRole(
+            accessManager.SPAWNER_ROLE(),
+            address(world1),
+            0
+        );
         // Configure permissions for WorldRegistry functions
         bytes4[] memory worldManagerSelectors = new bytes4[](2);
         worldManagerSelectors[0] = WorldRegistry.registerWorld.selector;
@@ -68,15 +105,7 @@ contract SpawnRegistryTest is Test {
             worldManagerSelectors,
             accessManager.WORLD_MANAGER_ROLE()
         );
-
-        bytes4[] memory spawnerSelectors = new bytes4[](1);
-        spawnerSelectors[0] = WorldRegistry.spawnEntity.selector;
-        accessManager.setTargetFunctionRole(
-            address(worldRegistry),
-            spawnerSelectors,
-            accessManager.SPAWNER_ROLE()
-        );
-
+        // Configure ADMIN role for WorldRegistry dependencies
         bytes4[] memory adminSelectors = new bytes4[](1);
         adminSelectors[0] = WorldRegistry.setDependencies.selector;
         accessManager.setTargetFunctionRole(
@@ -84,49 +113,9 @@ contract SpawnRegistryTest is Test {
             adminSelectors,
             accessManager.ADMIN_ROLE()
         );
-
-        // Configure permissions for SpawnRegistry functions
-        bytes4[] memory spawnManagerSelectors = new bytes4[](2);
-        spawnManagerSelectors[0] = SpawnRegistry.addValidSpawnWorld.selector;
-        spawnManagerSelectors[1] = SpawnRegistry.removeValidSpawnWorld.selector;
-        accessManager.setTargetFunctionRole(
-            address(spawnRegistry),
-            spawnManagerSelectors,
-            accessManager.SPAWN_MANAGER_ROLE()
-        );
-
-        bytes4[] memory spawnAdminSelectors = new bytes4[](1);
-        spawnAdminSelectors[0] = SpawnRegistry.setDependencies.selector;
-        accessManager.setTargetFunctionRole(
-            address(spawnRegistry),
-            spawnAdminSelectors,
-            accessManager.ADMIN_ROLE()
-        );
-
-        // Grant roles to addresses
-        accessManager.grantRole(
-            accessManager.WORLD_MANAGER_ROLE(),
-            spawnManager,
-            0
-        );
-        accessManager.grantRole(
-            accessManager.SPAWN_MANAGER_ROLE(),
-            spawnManager,
-            0
-        );
-        accessManager.grantRole(accessManager.SPAWNER_ROLE(), address(this), 0);
-        accessManager.grantRole(
-            accessManager.SPAWNER_ROLE(),
-            address(world1),
-            0
-        );
-
         vm.stopPrank();
 
-        // Initialize registries
-        vm.prank(admin);
-        worldRegistry.setDependencies(spawnRegistry);
-
+        // Connect registries and reducer
         vm.prank(admin);
         spawnRegistry.setDependencies(worldRegistry);
 
@@ -190,58 +179,47 @@ contract SpawnRegistryTest is Test {
         spawnRegistry.removeValidSpawnWorld(worldId);
     }
 
-    // Test spawning through WorldRegistry
-    function test_WorldRegistrySpawnEntity() public {
+    // Test spawning through reducer
+    function test_SpawnEntityThroughReducer() public {
         uint256 worldId = worldRegistry.getWorldId(world1);
-
-        // Add world as valid spawn point
         vm.prank(spawnManager);
         spawnRegistry.addValidSpawnWorld(worldId);
 
-        // Spawn entity through WorldRegistry
         vm.prank(address(world1));
-        worldRegistry.spawnEntity(gameEntity1, worldId);
-        assertEq(worldRegistry.getEntityWorldId(gameEntity1), worldId);
+        entityWorldReducer.spawnEntity(gameEntity1, worldId);
+        assertEq(entityWorldDatastore.getEntityWorldId(gameEntity1), worldId);
     }
 
-    // Test spawning in invalid world through WorldRegistry
-    function test_CannotSpawnInInvalidWorld() public {
+    function test_CannotSpawnThroughReducer_InvalidWorld() public {
         uint256 worldId = worldRegistry.getWorldId(world1);
-
-        vm.expectRevert(RegistryUtils.InvalidWorld.selector);
-        worldRegistry.spawnEntity(gameEntity1, worldId);
-    }
-
-    // Test spawning already spawned entity through WorldRegistry
-    function test_CannotSpawnExistingEntity() public {
-        uint256 worldId = worldRegistry.getWorldId(world1);
-
-        // Add world as valid spawn point
         vm.prank(spawnManager);
         spawnRegistry.addValidSpawnWorld(worldId);
 
-        // Spawn entity
         vm.prank(address(world1));
-        worldRegistry.spawnEntity(gameEntity1, worldId);
-
-        // Try to spawn again
-        vm.expectRevert(RegistryUtils.EntityAlreadyInWorld.selector);
-        vm.prank(address(world1));
-        worldRegistry.spawnEntity(gameEntity1, worldId);
+        vm.expectRevert(IEntityWorldReducer.InvalidWorld.selector);
+        entityWorldReducer.spawnEntity(gameEntity1, worldId);
     }
 
-    // Test unauthorized spawning through WorldRegistry
-    function test_OnlySpawnerCanSpawn() public {
+    function test_CannotSpawnThroughReducer_AlreadyInWorld() public {
         uint256 worldId = worldRegistry.getWorldId(world1);
-
-        // Add world as valid spawn point
         vm.prank(spawnManager);
         spawnRegistry.addValidSpawnWorld(worldId);
 
-        // Non-spawner cannot spawn
-        vm.expectRevert(); // AccessManager will revert with unauthorized error
+        vm.prank(address(world1));
+        entityWorldReducer.spawnEntity(gameEntity1, worldId);
+        vm.prank(address(world1));
+        vm.expectRevert(IEntityWorldReducer.EntityAlreadyInWorld.selector);
+        entityWorldReducer.spawnEntity(gameEntity1, worldId);
+    }
+
+    function test_OnlyReducerSpawnerCanSpawn() public {
+        uint256 worldId = worldRegistry.getWorldId(world1);
+        vm.prank(spawnManager);
+        spawnRegistry.addValidSpawnWorld(worldId);
+
         vm.prank(nonManager);
-        worldRegistry.spawnEntity(gameEntity1, worldId);
+        vm.expectRevert();
+        entityWorldReducer.spawnEntity(gameEntity1, worldId);
     }
 
     // Test event emissions
